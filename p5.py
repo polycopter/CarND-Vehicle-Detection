@@ -302,7 +302,7 @@ def cvt_color(img, conversion):
         
         
 def apply_threshold(heatmap, threshold):
-    heatmap[heatmap <= threshold] = 0
+    heatmap[heatmap < threshold] = 0
     return heatmap
     
     
@@ -431,7 +431,7 @@ def integrate(hmap, frames=5):
         if frame != (frame_count % frames):
             integrated_heatmap = np.add(integrated_heatmap, heatmap_frame[frame])
     # apply threshold
-    return apply_threshold(integrated_heatmap, 3)
+    return apply_threshold(integrated_heatmap, 2)
         
         
 def process_image(img):
