@@ -276,6 +276,53 @@ def search_windows(img, windows, clf, scaler, color_space='RGB',
     return on_windows
     
     
+def cvt_color(img, conversion):
+    if conversion == 'RGB2YCrCb':
+        return cv2.cvtColor(img, cv2.COLOR_RGB2YCrYb)
+    
+    
+def pre_hogify():
+    out_images = []
+    out_maps = []
+    out_boxes = []
+    ystart, ystop = 400, 656    # HCM#CH
+    scale = 1
+    
+    searchpath = 'test_images/*'
+    test_imgs = glob.glob(searchpath)
+    
+    for img_src in test_imgs:
+        img_boxes = []
+        t = time.time()
+        count = 0
+        image = mpimg.imread(img_src)
+        draw_img = np.copy(image)
+        heatmap = np.zeros_like(image[:,:,0])
+        img = img.astype(np.float32)/255
+        img_search_region = img[ystart:ystop,:,:]
+        ctrans = cvt_color(img_search_region, 'RGB2YCrCb')
+        if scale != 1:
+            imshape = ctrans.shape
+            ctrans = cv2.resize(ctrans, (np.int(imshape[1]/scale), np.int(imshape[0]/scale)))
+            
+        ch0 = ctrans[:,:,0] # Y
+        ch1 = ctrans[:,:,1] # Cr
+        ch2 = ctrans[:,:,2] # Cb
+        num_xblx = (ch0.shape[1] // pix_per_cell) - 1
+        num_yblx = (ch0.shape[0] // pix_per_cell) - 1
+        feat_per_blk = orient * cell_per_block**2
+        winsize = 64
+        blk_per_win = (winsize // pix_per_cell) - 1
+        cells_per_step = 2
+        xsteps = (num_xblx - blk_per_win) // cells_per_step
+        ysteps = (num_yblx - blk_per_win) // cells_per_step
+    
+        hog0 = 
+        hog1 = 
+        hog2 = 
+        
+    
+    
 if __name__ == '__main__':
 
     cars = load_class_images( 'vehicle' )
