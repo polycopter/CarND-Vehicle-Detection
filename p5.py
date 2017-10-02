@@ -3,6 +3,7 @@
 
 import glob
 import os
+import sys
 import time
 import matplotlib.image as mpimg
 import cv2
@@ -11,6 +12,25 @@ from skimage.feature import hog
 from sklearn.svm import LinearSVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+from scipy.ndimage.measurements import label
+from moviepy.editor import VideoFileClip
+
+# when I write the outermost loop, these are the parameters
+# that will be varied systematically to optimize the algorithm
+# but as David Byrne once said: I ain't got time for that now
+
+### TODO: Tweak these parameters and see how the results change.
+#color_space = 'YCrCb' # Can be RGB, HSV, LUV, HLS, YUV, YCrCb
+orient = 9  # HOG orientations
+pix_per_cell = 8 # HOG pixels per cell
+cells_per_block = 2 # HOG cells per block
+#hog_channel = 'ALL' # Can be 0, 1, 2, or "ALL"
+spatial_size = (32, 32) # Spatial binning dimensions
+hist_bins = 32    # Number of histogram bins
+
+# used for false-pos rejection
+heatmap_frame = []
+frame_count = 0
 
 
 def load_class_images(class_name):
@@ -278,15 +298,106 @@ def search_windows(img, windows, clf, scaler, color_space='RGB',
     
 def cvt_color(img, conversion):
     if conversion == 'RGB2YCrCb':
-        return cv2.cvtColor(img, cv2.COLOR_RGB2YCrYb)
+        return cv2.cvtColor(img, cv2.COLOR_RGB2YCrCb)
+        
+        
+def apply_threshold(heatmap, threshold):
+    heatmap[heatmap <= threshold] = 0
+    return heatmap
     
     
-def pre_hogify():
+def draw_labeled_bboxes(img, labels):
+    for car_number in range(1, labels[1]+1):
+        nonzero = (labels[0] == car_number).nonzero()
+        nonzeroy = np.array(nonzero[0])
+        nonzerox = np.array(nonzero[1])
+        bbox = ((np.min(nonzerox), np.min(nonzeroy)), (np.max(nonzerox), np.max(nonzeroy)))
+        cv2.rectangle(img, bbox[0], bbox[1], (0,50,255), 6)
+    return img
+    
+    
+def find_cars(image, scale):
+    
+    global X_Scaler
+    global svc
+ 
+    ### TODO: Tweak these parameters and see how the results change.
+    global orient #= 9  # HOG orientations
+    global pix_per_cell #= 8 # HOG pixels per cell
+    global cells_per_block #= 2 # HOG cells per block
+    #hog_channel = 'ALL' # Can be 0, 1, 2, or "ALL"
+    global spatial_size #= (32, 32) # Spatial binning dimensions
+    global hist_bins #= 32    # Number of histogram bins
+    
+    #color_space = 'YCrCb' # Can be RGB, HSV, LUV, HLS, YUV, YCrCb
+    color_conversion = 'RGB2YCrCb'
+    winsize = 64
+    ystart = image.shape[0]//2
+    ystop = image.shape[0] - winsize
+   
+    draw_img = np.copy(image)
+    heatmap = np.zeros_like(image[:,:,0])
+    img = image.astype(np.float32)/255
+    img_search_region = img[ystart:ystop,:,:]
+    ctrans = cvt_color(img_search_region, color_conversion)
+    if scale != 1:
+        imshape = ctrans.shape
+        ctrans = cv2.resize(ctrans, (np.int(imshape[1]/scale), np.int(imshape[0]/scale)))
+        
+    ch0 = ctrans[:,:,0] # Y
+    ch1 = ctrans[:,:,1] # Cr
+    ch2 = ctrans[:,:,2] # Cb
+    
+    num_xblx = (ch0.shape[1] // pix_per_cell) - 1
+    num_yblx = (ch0.shape[0] // pix_per_cell) - 1
+        
+    feat_per_blk = orient * cells_per_block**2
+    blk_per_win = (winsize // pix_per_cell) - 1
+    cells_per_step = 2
+    xsteps = (num_xblx - blk_per_win) // cells_per_step
+    ysteps = (num_yblx - blk_per_win) // cells_per_step
+
+    hog0 = get_hog_features(ch0, orient, pix_per_cell, cells_per_block, feature_vec=False)
+    hog1 = get_hog_features(ch1, orient, pix_per_cell, cells_per_block, feature_vec=False)
+    hog2 = get_hog_features(ch2, orient, pix_per_cell, cells_per_block, feature_vec=False)
+    
+    for xb in range(xsteps):
+        for yb in range(ysteps):
+            
+            ypos = yb * cells_per_step
+            xpos = xb * cells_per_step
+            
+            hogfeat0 = hog0[ypos:ypos+blk_per_win,xpos:xpos+blk_per_win].ravel()
+            hogfeat1 = hog1[ypos:ypos+blk_per_win,xpos:xpos+blk_per_win].ravel()
+            hogfeat2 = hog2[ypos:ypos+blk_per_win,xpos:xpos+blk_per_win].ravel()
+            hog_features = np.hstack((hogfeat0,hogfeat1, hogfeat2))
+            
+            xleft = xpos * pix_per_cell
+            ytop = ypos * pix_per_cell
+            
+            subimg = cv2.resize(ctrans[ytop:ytop+winsize, xleft:xleft+winsize], (64,64))
+            
+            spatial_feat = bin_spatial(subimg, size=spatial_size)
+            hist_feat = color_hist(subimg, nbins=hist_bins)
+            test_features = X_scaler.transform(np.hstack((spatial_feat, hist_feat, hog_features)).reshape(1, -1))
+            
+            test_prediction = svc.predict(test_features)
+            if test_prediction == 1:
+                xbox_left = np.int(xleft*scale)
+                ytop_draw = np.int(ytop*scale)
+                win_draw = np.int(winsize*scale) # but no 'lose or' yuk yuk
+                cv2.rectangle(draw_img, (xbox_left, ytop_draw+ystart), (xbox_left+win_draw, ytop_draw+win_draw+ystart),(0,50,255))
+                #img_boxes.append(((xbox_left, ytop_draw+ystart), (xbox_left+win_draw, ytop_draw+win_draw+ystart)))
+                heatmap[ytop_draw+ystart:ytop_draw+win_draw+ystart, xbox_left:xbox_left+win_draw] += 1
+                    
+    return draw_img, heatmap           
+            
+    
+def pre_hogified_finder():
     out_images = []
     out_maps = []
-    out_boxes = []
-    ystart, ystop = 400, 656    # HCM#CH
-    scale = 1
+    #out_boxes = []
+    scale = 1.5
     
     searchpath = 'test_images/*'
     test_imgs = glob.glob(searchpath)
@@ -296,106 +407,128 @@ def pre_hogify():
         t = time.time()
         count = 0
         image = mpimg.imread(img_src)
-        draw_img = np.copy(image)
-        heatmap = np.zeros_like(image[:,:,0])
-        img = img.astype(np.float32)/255
-        img_search_region = img[ystart:ystop,:,:]
-        ctrans = cvt_color(img_search_region, 'RGB2YCrCb')
-        if scale != 1:
-            imshape = ctrans.shape
-            ctrans = cv2.resize(ctrans, (np.int(imshape[1]/scale), np.int(imshape[0]/scale)))
-            
-        ch0 = ctrans[:,:,0] # Y
-        ch1 = ctrans[:,:,1] # Cr
-        ch2 = ctrans[:,:,2] # Cb
-        num_xblx = (ch0.shape[1] // pix_per_cell) - 1
-        num_yblx = (ch0.shape[0] // pix_per_cell) - 1
-        feat_per_blk = orient * cell_per_block**2
-        winsize = 64
-        blk_per_win = (winsize // pix_per_cell) - 1
-        cells_per_step = 2
-        xsteps = (num_xblx - blk_per_win) // cells_per_step
-        ysteps = (num_yblx - blk_per_win) // cells_per_step
-    
-        hog0 = 
-        hog1 = 
-        hog2 = 
+        out_img, heat_map = find_cars(image, scale)
+        labels = label(heat_map)
+        draw_img = draw_labeled_bboxes(np.copy(img), labels)
+        out_images.append(draw_img)
+        out_maps.append(heat_map)
         
+        
+def integrate(hmap, frames=5):
+    global heatmap_frame
+    global frame_count
     
+    # init only once
+    if frame_count == 0:
+        for i in range(frames):
+            heatmap_frame.append(np.zeros_like(hmap))
     
-if __name__ == '__main__':
+    # add in the new frame
+    heatmap_frame[frame_count % frames] = hmap
+    integrated_heatmap = hmap
+    # sum the frames
+    for frame in range(frames):
+        if frame != (frame_count % frames):
+            integrated_heatmap = np.add(integrated_heatmap, heatmap_frame[frame])
+    # apply threshold
+    return apply_threshold(integrated_heatmap, 3)
+        
+        
+def process_image(img):
+    out_img, out_heatmap = find_cars(img, 1.5)
+    heatmap = integrate( out_heatmap, 5 )
+    labels = label(heatmap)
+    return draw_labeled_bboxes(np.copy(img), labels)
 
+        
+def train_clf():
+    
     cars = load_class_images( 'vehicle' )
     uncars = load_class_images( 'non-vehicle' )
 
-    randomly_selected_car = np.random.randint(0,len(cars))
-    randomly_selected_notcar = np.random.randint(0,len(uncars))
-    
-    car_pic = mpimg.imread(cars[randomly_selected_car])
-    notta_car_pic = mpimg.imread(uncars[randomly_selected_notcar])
-    # the lines below were used to create "figure1" for the writeup
-    mpimg.imsave('output_images/randomcar.png', car_pic)
-    mpimg.imsave('output_images/randomnoncar.png', notta_car_pic)
-    
     ### TODO: Tweak these parameters and see how the results change.
+    
+    global orient #= 9  # HOG orientations
+    global pix_per_cell #= 8 # HOG pixels per cell
+    global cells_per_block #= 2 # HOG cells per block
+    global spatial_size #= (32, 32) # Spatial binning dimensions
+    global hist_bins #= 32    # Number of histogram bins
+
+    # -------- danger, Will Robinson: if change these, change find_cars() too !!!
+    
     color_space = 'YCrCb' # Can be RGB, HSV, LUV, HLS, YUV, YCrCb
-    orient = 9  # HOG orientations
-    pix_per_cell = 8 # HOG pixels per cell
-    cell_per_block = 2 # HOG cells per block
     hog_channel = 'ALL' # Can be 0, 1, 2, or "ALL"
-    spatial_size = (32, 32) # Spatial binning dimensions
-    hist_bins = 32    # Number of histogram bins
+    
     spatial_feat = True # Spatial features on or off
     hist_feat = True # Histogram features on or off
     hog_feat = True # HOG features on or off
     
-    car_features, car_hog_img = single_img_features(car_pic, 
-                                                    hog_feat=hog_feat,
-                                                    hog_channel=hog_channel, 
-                                                    spatial_feat=spatial_feat, 
-                                                    hist_feat=hist_feat, 
-                                                    color_space=color_space, 
-                                                    spatial_size=spatial_size, 
-                                                    hist_bins=hist_bins, 
-                                                    orient=orient, 
-                                                    pix_per_cell=pix_per_cell, 
-                                                    cell_per_block=cell_per_block,
-                                                    vis=True
-                                                    )
-                            
-    uncar_features, uncar_hog_img = single_img_features(notta_car_pic, 
-                            color_space=color_space, 
-                            spatial_size=spatial_size, hist_bins=hist_bins, 
-                            orient=orient, pix_per_cell=pix_per_cell, 
-                            cell_per_block=cell_per_block, 
-                            hog_channel=hog_channel, spatial_feat=spatial_feat, 
-                            vis=True,
-                            hist_feat=hist_feat, hog_feat=hog_feat)
-                            
-    # the lines below were used to create "figure2" for the writeup
-    mpimg.imsave('output_images/randomcarhog.png', car_hog_img)
-    mpimg.imsave('output_images/randomnoncarhog.png', uncar_hog_img)
-                                                        
+    # -------- end danger zone
+        
+    # only needed to do this a finite # of times, now done with it
+    if False:
+        randomly_selected_car = np.random.randint(0,len(cars))
+        randomly_selected_notcar = np.random.randint(0,len(uncars))
+        
+        car_pic = mpimg.imread(cars[randomly_selected_car])
+        notta_car_pic = mpimg.imread(uncars[randomly_selected_notcar])
+        # the lines below were used to create "figure1" for the writeup
+        mpimg.imsave('output_images/randomcar.png', car_pic)
+        mpimg.imsave('output_images/randomnoncar.png', notta_car_pic)
+        
+        print('extracting features from a random car image')
+        car_features, car_hog_img = single_img_features(car_pic, 
+                                                        hog_feat=hog_feat,
+                                                        hog_channel=hog_channel, 
+                                                        spatial_feat=spatial_feat, 
+                                                        hist_feat=hist_feat, 
+                                                        color_space=color_space, 
+                                                        spatial_size=spatial_size, 
+                                                        hist_bins=hist_bins, 
+                                                        orient=orient, 
+                                                        pix_per_cell=pix_per_cell, 
+                                                        cell_per_block=cells_per_block,
+                                                        vis=True
+                                                        )
+                                
+        print('extracting features from a random not-a-car image')
+        uncar_features, uncar_hog_img = single_img_features(notta_car_pic, 
+                                color_space=color_space, 
+                                spatial_size=spatial_size, hist_bins=hist_bins, 
+                                orient=orient, pix_per_cell=pix_per_cell, 
+                                cell_per_block=cells_per_block, 
+                                hog_channel=hog_channel, spatial_feat=spatial_feat, 
+                                vis=True,
+                                hist_feat=hist_feat, hog_feat=hog_feat)
+                                
+        # the lines below were used to create "figure2" for the writeup
+        mpimg.imsave('output_images/randomcarhog.png', car_hog_img)
+        mpimg.imsave('output_images/randomnoncarhog.png', uncar_hog_img)
+                                                   
+    print('extracting features from all the car images')
     car_features = extract_features(cars, color_space=color_space, 
                             spatial_size=spatial_size, hist_bins=hist_bins, 
                             orient=orient, pix_per_cell=pix_per_cell, 
-                            cell_per_block=cell_per_block, 
+                            cell_per_block=cells_per_block, 
                             hog_channel=hog_channel, spatial_feat=spatial_feat, 
                             hist_feat=hist_feat, hog_feat=hog_feat)
                             
+    print('extracting features from all the "uncar" images')
     uncar_features = extract_features(uncars, color_space=color_space, 
                             spatial_size=spatial_size, hist_bins=hist_bins, 
                             orient=orient, pix_per_cell=pix_per_cell, 
-                            cell_per_block=cell_per_block, 
+                            cell_per_block=cells_per_block, 
                             hog_channel=hog_channel, spatial_feat=spatial_feat, 
                             hist_feat=hist_feat, hog_feat=hog_feat)
 
+    print('normalizing the extracted features')
     X = np.vstack((car_features, uncar_features)).astype(np.float64)                        
     # Fit a per-column scaler
     X_scaler = StandardScaler().fit(X)
     # Apply the scaler to X
     scaled_X = X_scaler.transform(X)
 
+    print('labeling the 2 classes')
     # Define the labels vector
     y = np.hstack((np.ones(len(car_features)), np.zeros(len(uncar_features))))
 
@@ -404,8 +537,9 @@ if __name__ == '__main__':
     X_train, X_test, y_train, y_test = train_test_split(
         scaled_X, y, test_size=0.2, random_state=rand_state)
 
-    print('Using:',orient,'orientations',pix_per_cell,
-        'pixels per cell and', cell_per_block,'cells per block')
+    print('fitting a classifier')
+    print('Using:', orient, 'orientations', pix_per_cell,
+        'pixels per cell and', cells_per_block, 'cells per block')
     print('Feature vector length:', len(X_train[0]))
     # Use a linear SVC 
     svc = LinearSVC()
@@ -417,13 +551,15 @@ if __name__ == '__main__':
     # Check the score of the SVC
     print('Test Accuracy of SVC = ', round(svc.score(X_test, y_test), 4))
     
-    searchpath = 'test_images/*'
-    test_imgs = glob.glob(searchpath)
-    images = []
-    titles = []
-    overlap = 0.5
+    if False:
+        searchpath = 'test_images/*'
+        test_imgs = glob.glob(searchpath)
+        images = []
+        titles = []
+        overlap = 0.5
     
-    for img_src in test_imgs:
+    #for img_src in test_imgs:
+    if False:
         
         # Check the prediction time for a single sample
         t=time.time()
@@ -433,25 +569,49 @@ if __name__ == '__main__':
         # verify that scaling is 0..255
         print(image.shape, image[0][0][0], np.min(image), np.max(image))
 
-        # Uncomment the following line if you extracted training
+        # need the following line because we extracted training
         # data from .png images (scaled 0 to 1 by mpimg) and the
-        # image you are searching is a .jpg (scaled 0 to 255)
+        # image we are searching is a .jpg (scaled 0 to 255)
         image = image.astype(np.float32)/255
 
         y_start_stop = [image.shape[0]//2, image.shape[0]] # Min and max in y to search in slide_window()
 
         windows = slide_window(image, x_start_stop=[None, None], y_start_stop=y_start_stop, 
-                                xy_window=(128, 128), xy_overlap=(overlap, overlap))
+                                xy_window=(96, 96), xy_overlap=(overlap, overlap))
 
         hot_windows = search_windows(image, windows, svc, X_scaler, color_space=color_space, 
                                     spatial_size=spatial_size, hist_bins=hist_bins, 
                                     orient=orient, pix_per_cell=pix_per_cell, 
-                                    cell_per_block=cell_per_block,
+                                    cell_per_block=cells_per_block,
                                     hog_channel=hog_channel, spatial_feat=spatial_feat, 
                                     hist_feat=hist_feat, hog_feat=hog_feat)                       
 
         window_img = draw_boxes(draw_image, hot_windows, color=(0, 50, 255), thick=6)                    
         mpimg.imsave('output_images/'+img_src, window_img)
         print(time.time() - t, 'seconds to process {0} windows'.format(len(windows)))
+    
+    return X_scaler, svc
+    
+
+if __name__ == '__main__':
+    
+    # train the classifier
+    global X_Scaler
+    global svc
+    X_scaler, svc = train_clf()
+    
+    print('classifier trained, processing video')
+    if len(sys.argv) > 1:
+        print(len(sys.argv), '==> test video')
+        vid_out = 'test.mp4'
+        clip = VideoFileClip('test_video.mp4')
+    else:
+        print(len(sys.argv), '==> full video')
+        vid_out = 'p5.mp4'
+        clip = VideoFileClip('project_video.mp4')
+        
+    test_clip = clip.fl_image(process_image)
+    test_clip.write_videofile(vid_out, audio=False)
+    print('submit it!')
     
     
