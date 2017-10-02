@@ -399,11 +399,12 @@ if __name__ == '__main__':
         hot_windows = search_windows(image, windows, svc, X_scaler, color_space=color_space, 
                                     spatial_size=spatial_size, hist_bins=hist_bins, 
                                     orient=orient, pix_per_cell=pix_per_cell, 
-                                    cell_per_block=cell_per_block, vis=False,
+                                    cell_per_block=cell_per_block,
                                     hog_channel=hog_channel, spatial_feat=spatial_feat, 
                                     hist_feat=hist_feat, hog_feat=hog_feat)                       
 
         window_img = draw_boxes(draw_image, hot_windows, color=(0, 50, 255), thick=6)                    
-        mpimg.imsave('output_images/'+img_src+'.jpg', window_img)
+        mpimg.imsave('output_images/'+img_src, window_img)
+        print(time.time() - t, 'seconds to process {0} windows'.format(len(windows)))
     
     
